@@ -164,6 +164,47 @@ vector<double> getXY(
 
 }
 
+class Vehicle
+{
+public:
+    double id;
+    double x;
+    double y;
+    double vx;
+    double vy;
+    double s;
+    double d;
+};
+
+class SensorData
+{
+public:
+    double x;
+    double y;
+    double s;
+    double d;
+    double yaw;
+    double speed;
+
+    std::vector<Vehicle> vehicles;
+};
+
+SensorData getSensorData(
+    const std::vector<std::vector<double>> &sensor_fusion,
+    double car_x, double car_y, double car_s, double car_d,
+    double car_yaw, double car_speed)
+{
+    std::vector<Vehicle> vehicles;
+    for (auto &V : sensor_fusion)
+    {
+        vehicles.push_back({ V[0], V[1], V[2], V[3], V[4], V[5], V[6] });
+    }
+
+    return {
+        car_x, car_y, car_s, car_d, car_yaw, car_speed, vehicles
+    };
+}
+
 int main() {
   uWS::Hub h;
 
@@ -253,6 +294,9 @@ int main() {
             {
                 car_s = end_path_s;
             }
+
+            SensorData Data = getSensorData(sensor_fusion, car_x, car_y, car_s,
+                car_d, car_yaw, car_speed);
 
             bool too_close = false;
 
