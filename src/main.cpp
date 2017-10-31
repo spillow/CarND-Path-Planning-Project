@@ -175,8 +175,6 @@ public:
     double d;
     double yaw;
     double speed;
-    double pred_s;
-    double pred_d;
 };
 
 class Vehicle
@@ -190,10 +188,25 @@ public:
     double s;
     double d;
 
-    double predict_s(double t) const
+    double _s(double t = 0.0) const
     {
         double speed = sqrt(vx*vx + vy*vy);
         return s + speed * t;
+    }
+
+    double _d(double t = 0.0) const
+    {
+        return d;
+    }
+
+    unsigned get_lane() const
+    {
+        if (d < 4)
+            return 0;
+        else if (d < 8)
+            return 1;
+        else
+            return 2;
     }
 };
 
@@ -204,10 +217,36 @@ public:
     std::vector<Vehicle> vehicles;
 };
 
+class StateInfo
+{
+public:
+    std::vector<double> previous_path_x;
+    std::vector<double> previous_path_y;
+    double end_path_s;
+    double end_path_d;
+
+    double end_path_time() const
+    {
+        return (double)previous_path_x.size() * TIME_STEP;
+    }
+};
+
+class Context
+{
+public:
+    StateInfo Info;
+    SensorData Data;
+
+    double end_path_time() const
+    {
+        return Info.end_path_time();
+    }
+};
+
 SensorData getSensorData(
     const std::vector<std::vector<double>> &sensor_fusion,
     double car_x, double car_y, double car_s, double car_d,
-    double car_yaw, double car_speed, double end_path_s, double end_path_d)
+    double car_yaw, double car_speed)
 {
     std::vector<Vehicle> vehicles;
     for (auto &V : sensor_fusion)
@@ -215,14 +254,45 @@ SensorData getSensorData(
         vehicles.push_back({ V[0], V[1], V[2], V[3], V[4], V[5], V[6] });
     }
 
-    Ego ego { car_x, car_y, car_s, car_d, car_yaw, car_speed, end_path_s, end_path_d };
+    Ego ego { car_x, car_y, car_s, car_d, car_yaw, car_speed };
 
     return { ego, vehicles };
 }
 
-bool open_lane(const SensorData &Data, unsigned lane)
+StateInfo getStateInfo(
+    const std::vector<double> &previous_path_x,
+    const std::vector<double> &previous_path_y,
+    double end_path_s,
+    double end_path_d)
 {
-    return false;
+    return {
+        previous_path_x, previous_path_y,
+        end_path_s, end_path_d
+    };
+}
+
+Context getContext(const SensorData &Data, const StateInfo &Info)
+{
+    return { Info, Data };
+}
+
+bool open_lane(const Context &Ctx, unsigned lane)
+{
+    auto &Vehicles = Ctx.Data.vehicles;
+    double t = Ctx.end_path_time();
+
+    for (auto &V : Vehicles)
+    {
+        if (!V.get_lane() == lane)
+            continue;
+
+        if (abs(Ctx.Info.end_path_s - V._s(t)) < 20.0)
+        {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 int main() {
@@ -303,30 +373,30 @@ int main() {
           	// Sensor Fusion Data, a list of all other cars on the same side of the road.
           	const std::vector<std::vector<double>> sensor_fusion = j[1]["sensor_fusion"];
 
-            // fusion data for each car:
-            // [ id, x, y, vx, vy, s, d ]
+            const Context Ctx =
+                getContext(
+                    getSensorData(sensor_fusion, car_x, car_y, car_s,
+                        car_d, car_yaw, car_speed),
+                    getStateInfo(previous_path_x, previous_path_y, end_path_s, end_path_d));
 
             const unsigned prev_size = previous_path_x.size();
 
-            const double pred_time = (double)prev_size * TIME_STEP;
+            const double end_path_time = Ctx.Info.end_path_time();
 
             /////
-
-            const SensorData Data = getSensorData(sensor_fusion, car_x, car_y, car_s,
-                car_d, car_yaw, car_speed, end_path_s, end_path_d);
 
             double car_pred_s = (prev_size > 0) ? end_path_s : car_s;
 
             bool too_close = false;
 
-            auto &Vehicles = Data.vehicles;
+            auto &Vehicles = Ctx.Data.vehicles;
 
             for (auto &V : Vehicles)
             {
                 float d = V.d;
                 if (d < (2 + 4 * lane + 2) && d > (2 + 4 * lane - 2))
                 {
-                    double vehicle_pred_s = V.predict_s(pred_time);
+                    double vehicle_pred_s = V._s(end_path_time);
 
                     if (vehicle_pred_s > car_pred_s && (vehicle_pred_s - car_pred_s) < 30.0)
                     {
@@ -334,19 +404,19 @@ int main() {
 
                         if (lane == 0)
                         {
-                            if (open_lane(Data, 1))
+                            if (open_lane(Ctx, 1))
                                 lane = 1;
                         }
                         else if (lane == 1)
                         {
-                            if (open_lane(Data, 0))
+                            if (open_lane(Ctx, 0))
                                 lane = 0;
-                            else if (open_lane(Data, 2))
+                            else if (open_lane(Ctx, 2))
                                 lane = 2;
                         }
                         else if (lane == 2)
                         {
-                            if (open_lane(Data, 1))
+                            if (open_lane(Ctx, 1))
                                 lane = 1;
                         }
                     }
