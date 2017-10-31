@@ -306,7 +306,7 @@ bool open_lane(const Context &Ctx, unsigned lane)
 
     for (auto &V : Vehicles)
     {
-        if (!V.get_lane() == lane)
+        if (V.get_lane() != lane)
             continue;
 
         if (abs(Ctx.Info.end_path_s - V._s(t)) < 20.0)
@@ -646,6 +646,16 @@ int main() {
                 }
                 else
                 {
+                    if (look_for_lane_change(Ctx))
+                    {
+                        ref_vel -= 0.224;
+                    }
+                    else
+                    {
+                        if (ref_vel < 49.5)
+                            ref_vel += 0.224;
+                    }
+                    /*
                     const Vehicle *InFront = get_vehicle_in_front(Ctx);
 
                     if (InFront)
@@ -659,6 +669,7 @@ int main() {
                     {
                         State = KEEP_LANE;
                     }
+                    */
                 }
                 fill_straight_path(Ctx, ref_vel, lane, new_x, new_y);
                 break;
