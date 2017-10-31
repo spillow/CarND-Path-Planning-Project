@@ -341,6 +341,28 @@ bool look_for_lane_change(const Context &Ctx)
     return false;
 }
 
+std::vector<Vehicle> cars_ahead(const Context &Ctx, double s_begin, double s_end, unsigned lane)
+{
+    auto &Vehicles = Ctx.Data.vehicles;
+    double t = Ctx.end_path_time();
+    double car_pred_s = Ctx.Info.end_path_s;
+
+    std::vector<Vehicle> in_range;
+
+    for (auto &V : Vehicles)
+    {
+        if (V.get_lane() == lane)
+        {
+            double vehicle_pred_s = V._s(t);
+
+            if (vehicle_pred_s > s_begin && vehicle_pred_s < s_end)
+                in_range.push_back(V);
+        }
+    }
+
+    return in_range;
+}
+
 bool check_lane_opening(const Context &Ctx, unsigned &lane)
 {
     bool ret = false;
@@ -352,9 +374,30 @@ bool check_lane_opening(const Context &Ctx, unsigned &lane)
     }
     else if (lane == 1)
     {
-        if (ret = open_lane(Ctx, 0))
+        bool left  = open_lane(Ctx, 0);
+        bool right = open_lane(Ctx, 2);
+
+        ret = left || right;
+
+        if (left && right)
+        {
+            // pick the one with less traffic ahead
+            double s_begin = Ctx.Info.end_path_s;
+            double s_end = s_begin + 40;
+
+            if (cars_ahead(Ctx, s_begin, s_end, 0).size() <=
+                cars_ahead(Ctx, s_begin, s_end, 2).size())
+            {
+                lane = 0;
+            }
+            else
+            {
+                lane = 1;
+            }
+        }
+        else if (left)
             lane = 0;
-        else if (ret = open_lane(Ctx, 2))
+        else if (right)
             lane = 2;
     }
     else if (lane == 2)
