@@ -164,6 +164,21 @@ vector<double> getXY(
 
 }
 
+const double TIME_STEP = 0.02; // 20 ms
+
+class Ego
+{
+public:
+    double x;
+    double y;
+    double s;
+    double d;
+    double yaw;
+    double speed;
+    double pred_s;
+    double pred_d;
+};
+
 class Vehicle
 {
 public:
@@ -179,15 +194,7 @@ public:
 class SensorData
 {
 public:
-    double x;
-    double y;
-    double s;
-    double d;
-    double yaw;
-    double speed;
-    double pred_s;
-    double pred_d;
-
+    Ego ego;
     std::vector<Vehicle> vehicles;
 };
 
@@ -202,9 +209,9 @@ SensorData getSensorData(
         vehicles.push_back({ V[0], V[1], V[2], V[3], V[4], V[5], V[6] });
     }
 
-    return {
-        car_x, car_y, car_s, car_d, car_yaw, car_speed, end_path_s, end_path_d, vehicles
-    };
+    Ego ego { car_x, car_y, car_s, car_d, car_yaw, car_speed, end_path_s, end_path_d };
+
+    return { ego, vehicles };
 }
 
 bool open_lane(SensorData &Data, unsigned lane)
@@ -304,17 +311,19 @@ int main() {
 
             bool too_close = false;
 
-            for (int i = 0; i < sensor_fusion.size(); i++)
+            auto &Vehicles = Data.vehicles;
+
+            for (int i = 0; i < Vehicles.size(); i++)
             {
-                float d = sensor_fusion[i][6];
+                float d = Vehicles[i].d;
                 if (d < (2 + 4 * lane + 2) && d > (2 + 4 * lane - 2))
                 {
-                    double vx = sensor_fusion[i][3];
-                    double vy = sensor_fusion[i][4];
+                    double vx = Vehicles[i].vx;
+                    double vy = Vehicles[i].vy;
                     double check_speed = sqrt(vx*vx + vy*vy);
-                    double check_car_s = sensor_fusion[i][5];
+                    double check_car_s = Vehicles[i].s;
 
-                    check_car_s += (double)prev_size * 0.02 * check_speed;
+                    check_car_s += (double)prev_size * TIME_STEP * check_speed;
 
                     if (check_car_s > car_pred_s && (check_car_s - car_pred_s) < 30.0)
                     {
@@ -431,11 +440,10 @@ int main() {
 
             double x_add_on = 0;
 
-            // N * 0.02 * v = d
-
             for (int i = 1; i < 50 - prev_size; i++)
             {
-                double N = (target_dist / (.02 * ref_vel/2.24));
+                // N * TIME_STEP * v = d
+                double N = (target_dist / (TIME_STEP * ref_vel/2.24));
                 double x_point = x_add_on + target_x / N;
                 double y_point = s(x_point);
 
