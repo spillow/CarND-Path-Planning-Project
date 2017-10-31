@@ -189,6 +189,12 @@ public:
     double vy;
     double s;
     double d;
+
+    double predict_s(double t) const
+    {
+        double speed = sqrt(vx*vx + vy*vy);
+        return s + speed * t;
+    }
 };
 
 class SensorData
@@ -214,7 +220,7 @@ SensorData getSensorData(
     return { ego, vehicles };
 }
 
-bool open_lane(SensorData &Data, unsigned lane)
+bool open_lane(const SensorData &Data, unsigned lane)
 {
     return false;
 }
@@ -295,16 +301,18 @@ int main() {
           	const double end_path_d = j[1]["end_path_d"];
 
           	// Sensor Fusion Data, a list of all other cars on the same side of the road.
-          	std::vector<std::vector<double>> sensor_fusion = j[1]["sensor_fusion"];
+          	const std::vector<std::vector<double>> sensor_fusion = j[1]["sensor_fusion"];
 
             // fusion data for each car:
             // [ id, x, y, vx, vy, s, d ]
 
             const unsigned prev_size = previous_path_x.size();
 
+            const double pred_time = (double)prev_size * TIME_STEP;
+
             /////
 
-            SensorData Data = getSensorData(sensor_fusion, car_x, car_y, car_s,
+            const SensorData Data = getSensorData(sensor_fusion, car_x, car_y, car_s,
                 car_d, car_yaw, car_speed, end_path_s, end_path_d);
 
             double car_pred_s = (prev_size > 0) ? end_path_s : car_s;
@@ -313,19 +321,14 @@ int main() {
 
             auto &Vehicles = Data.vehicles;
 
-            for (int i = 0; i < Vehicles.size(); i++)
+            for (auto &V : Vehicles)
             {
-                float d = Vehicles[i].d;
+                float d = V.d;
                 if (d < (2 + 4 * lane + 2) && d > (2 + 4 * lane - 2))
                 {
-                    double vx = Vehicles[i].vx;
-                    double vy = Vehicles[i].vy;
-                    double check_speed = sqrt(vx*vx + vy*vy);
-                    double check_car_s = Vehicles[i].s;
+                    double vehicle_pred_s = V.predict_s(pred_time);
 
-                    check_car_s += (double)prev_size * TIME_STEP * check_speed;
-
-                    if (check_car_s > car_pred_s && (check_car_s - car_pred_s) < 30.0)
+                    if (vehicle_pred_s > car_pred_s && (vehicle_pred_s - car_pred_s) < 30.0)
                     {
                         too_close = true;
 
