@@ -185,6 +185,8 @@ public:
     double d;
     double yaw;
     double speed;
+    double pred_s;
+    double pred_d;
 
     std::vector<Vehicle> vehicles;
 };
@@ -192,7 +194,7 @@ public:
 SensorData getSensorData(
     const std::vector<std::vector<double>> &sensor_fusion,
     double car_x, double car_y, double car_s, double car_d,
-    double car_yaw, double car_speed)
+    double car_yaw, double car_speed, double end_path_s, double end_path_d)
 {
     std::vector<Vehicle> vehicles;
     for (auto &V : sensor_fusion)
@@ -201,8 +203,13 @@ SensorData getSensorData(
     }
 
     return {
-        car_x, car_y, car_s, car_d, car_yaw, car_speed, vehicles
+        car_x, car_y, car_s, car_d, car_yaw, car_speed, end_path_s, end_path_d, vehicles
     };
+}
+
+bool open_lane(SensorData &Data, unsigned lane)
+{
+    return false;
 }
 
 int main() {
@@ -266,19 +273,19 @@ int main() {
           // j[1] is the data JSON object
           
         	// Main car's localization Data
-          	double car_x = j[1]["x"];
-          	double car_y = j[1]["y"];
-          	double car_s = j[1]["s"];
-          	double car_d = j[1]["d"];
-          	double car_yaw = j[1]["yaw"];
-          	double car_speed = j[1]["speed"];
+          	const double car_x = j[1]["x"];
+          	const double car_y = j[1]["y"];
+          	const double car_s = j[1]["s"];
+          	const double car_d = j[1]["d"];
+          	const double car_yaw = j[1]["yaw"];
+          	const double car_speed = j[1]["speed"];
 
           	// Previous path data given to the Planner
-          	auto previous_path_x = j[1]["previous_path_x"];
-          	auto previous_path_y = j[1]["previous_path_y"];
+          	const auto previous_path_x = j[1]["previous_path_x"];
+          	const auto previous_path_y = j[1]["previous_path_y"];
           	// Previous path's end s and d values 
-          	double end_path_s = j[1]["end_path_s"];
-          	double end_path_d = j[1]["end_path_d"];
+          	const double end_path_s = j[1]["end_path_s"];
+          	const double end_path_d = j[1]["end_path_d"];
 
           	// Sensor Fusion Data, a list of all other cars on the same side of the road.
           	std::vector<std::vector<double>> sensor_fusion = j[1]["sensor_fusion"];
@@ -286,17 +293,14 @@ int main() {
             // fusion data for each car:
             // [ id, x, y, vx, vy, s, d ]
 
-            unsigned prev_size = previous_path_x.size();
+            const unsigned prev_size = previous_path_x.size();
 
             /////
 
-            if (prev_size > 0)
-            {
-                car_s = end_path_s;
-            }
-
             SensorData Data = getSensorData(sensor_fusion, car_x, car_y, car_s,
-                car_d, car_yaw, car_speed);
+                car_d, car_yaw, car_speed, end_path_s, end_path_d);
+
+            double car_pred_s = (prev_size > 0) ? end_path_s : car_s;
 
             bool too_close = false;
 
@@ -312,13 +316,26 @@ int main() {
 
                     check_car_s += (double)prev_size * 0.02 * check_speed;
 
-                    if (check_car_s > car_s && (check_car_s - car_s) < 30.0)
+                    if (check_car_s > car_pred_s && (check_car_s - car_pred_s) < 30.0)
                     {
                         too_close = true;
 
-                        if (lane > 0)
+                        if (lane == 0)
                         {
-                            lane = 0;
+                            if (open_lane(Data, 1))
+                                lane = 1;
+                        }
+                        else if (lane == 1)
+                        {
+                            if (open_lane(Data, 0))
+                                lane = 0;
+                            else if (open_lane(Data, 2))
+                                lane = 2;
+                        }
+                        else if (lane == 2)
+                        {
+                            if (open_lane(Data, 1))
+                                lane = 1;
                         }
                     }
                 }
@@ -370,11 +387,11 @@ int main() {
                 ptsy.push_back(ref_y);
             }
 
-            std::vector<double> next_wp0 = getXY(car_s + 30, (2 + 4 * lane),
+            std::vector<double> next_wp0 = getXY(car_pred_s + 30, (2 + 4 * lane),
                 map_waypoints_s, map_waypoints_x, map_waypoints_y);
-            std::vector<double> next_wp1 = getXY(car_s + 60, (2 + 4 * lane),
+            std::vector<double> next_wp1 = getXY(car_pred_s + 60, (2 + 4 * lane),
                 map_waypoints_s, map_waypoints_x, map_waypoints_y);
-            std::vector<double> next_wp2 = getXY(car_s + 90, (2 + 4 * lane),
+            std::vector<double> next_wp2 = getXY(car_pred_s + 90, (2 + 4 * lane),
                 map_waypoints_s, map_waypoints_x, map_waypoints_y);
 
             ptsx.push_back(next_wp0[0]);
@@ -402,7 +419,7 @@ int main() {
           	vector<double> next_x_vals;
           	vector<double> next_y_vals;
 
-            for (int i = 0; i < previous_path_x.size(); i++)
+            for (int i = 0; i < prev_size; i++)
             {
                 next_x_vals.push_back(previous_path_x[i]);
                 next_y_vals.push_back(previous_path_y[i]);
@@ -416,7 +433,7 @@ int main() {
 
             // N * 0.02 * v = d
 
-            for (int i = 1; i < 50 - previous_path_x.size(); i++)
+            for (int i = 1; i < 50 - prev_size; i++)
             {
                 double N = (target_dist / (.02 * ref_vel/2.24));
                 double x_point = x_add_on + target_x / N;
