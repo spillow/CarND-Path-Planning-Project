@@ -9,8 +9,14 @@
 #include "Eigen-3.3/Eigen/QR"
 #include "json.hpp"
 #include "spline.h"
+#include <random>
+
+#include <deque>
+#include "Eigen-3.3/Eigen/Dense"
 
 using namespace std;
+using Eigen::MatrixXd;
+using Eigen::VectorXd;
 
 // for convenience
 using json = nlohmann::json;
@@ -187,6 +193,26 @@ public:
     }
 };
 
+template<class T>
+class Buffer
+{
+public:
+    explicit Buffer(unsigned Size) : _Size(Size) {}
+    void push(T Elem)
+    {
+        if (_Items.size() == _Size)
+            _Items.pop_front();
+
+        _Items.push_back(Elem);
+    }
+
+    std::deque<double>::iterator begin() { _Items.begin(); }
+    std::deque<double>::iterator end()   { _Items.end(); }
+private:
+    const unsigned _Size;
+    std::deque<T> _Items;
+};
+
 class Vehicle
 {
 public:
@@ -198,6 +224,12 @@ public:
     double s;
     double d;
 
+    Vehicle(
+        double id, double x, double y,
+        double vx, double vy, double s, double d) :
+        id(id), x(x), y(y), vx(vx), vy(vy), s(s), d(d),
+        s_points(5) {}
+
     double speed() const
     {
         return sqrt(vx*vx + vy*vy);
@@ -208,9 +240,41 @@ public:
         return s + speed() * t;
     }
 
+    double _sd(double t = 0.0) const
+    {
+        return speed();
+    }
+
+    double _sdd(double t = 0.0) const
+    {
+        return 0.0;
+    }
+
     double _d(double t = 0.0) const
     {
         return d;
+    }
+
+    double _dd(double t = 0.0) const
+    {
+        return 0.0;
+    }
+
+    double _ddd(double t = 0.0) const
+    {
+        return 0.0;
+    }
+
+    vector<double> state_predict(double t = 0.0) const
+    {
+        return {
+            _s(t) + _sd(t) * t + 0.5 * _sdd(t) * t * t,
+            _sd(t) + _sdd(t) * t,
+            _sdd(t),
+            _d(t) + _dd(t) * t + 0.5 * _ddd(t) * t * t,
+            _dd(t) + _ddd(t) * t,
+            _ddd(t)
+        };
     }
 
     unsigned get_lane() const
@@ -222,6 +286,8 @@ public:
         else
             return 2;
     }
+private:
+    Buffer<double> s_points;
 };
 
 enum BehaviorState
@@ -547,6 +613,148 @@ void fill_straight_path(
         new_x.push_back(x_point);
         new_y.push_back(y_point);
     }
+}
+
+vector<double> JMT(vector<double> start, vector <double> end, double T)
+{
+    /*
+    Calculate the Jerk Minimizing Trajectory that connects the initial state
+    to the final state in time T.
+
+    INPUTS
+
+    start - the vehicles start location given as a length three array
+    corresponding to initial values of [s, s_dot, s_double_dot]
+
+    end   - the desired end state for vehicle. Like "start" this is a
+    length three array.
+
+    T - The duration, in seconds, over which this maneuver should occur.
+
+    OUTPUT
+    an array of length 6, each value corresponding to a coefficent in the polynomial
+    s(t) = a_0 + a_1 * t + a_2 * t**2 + a_3 * t**3 + a_4 * t**4 + a_5 * t**5
+
+    EXAMPLE
+
+    > JMT( [0, 10, 0], [10, 10, 0], 1)
+    [0.0, 10.0, 0.0, 0.0, 0.0, 0.0]
+    */
+
+    double si = start[0];
+    double sid = start[1];
+    double sidd = start[2];
+
+    double sf = end[0];
+    double sfd = end[1];
+    double sfdd = end[2];
+
+    double a0 = si;
+    double a1 = sid;
+    double a2 = 0.5*sidd;
+
+    MatrixXd lhs = MatrixXd(3, 3);
+    VectorXd rhs = VectorXd(3);
+
+    double T2 = T*T;
+    double T3 = T2*T;
+    double T4 = T3*T;
+    double T5 = T4*T;
+
+    lhs << T3,      T4,     T5,
+           3 * T2, 4 * T3, 5 * T4,
+           6 * T, 12 * T2, 20 * T3;
+
+    rhs << sf - (si + sid*T + 0.5*sidd*T2),
+           sfd - (sid + sidd*T),
+           sfdd - sidd;
+
+    VectorXd res = lhs.inverse() * rhs;
+
+    return { a0, a1, a2, res[0], res[1], res[2] };
+}
+
+vector<double> add_vectors(const vector<double> &a, const vector<double> &b)
+{
+    assert(a.size() == b.size());
+    vector<double> newvec;
+    for (unsigned i = 0; i < a.size(); i++)
+    {
+        newvec.push_back(a[i] + b[i]);
+    }
+
+    return newvec;
+}
+
+std::pair<vector<double>, vector<double>> perturb_goal(vector<double> goal_s, vector<double> goal_d)
+{
+    vector<double> SIGMA_S { 10.0, 4.0, 2.0 };
+    vector<double> SIGMA_D { 1.0, 1.0, 1.0 };
+
+    default_random_engine gen;
+
+    vector<double> new_goal_s;
+    for (unsigned i = 0; i < 3; i++)
+    {
+        std::normal_distribution<double> distr_s(goal_s[i], SIGMA_S[i]);
+        new_goal_s.push_back(distr_s(gen));
+    }
+
+    vector<double> new_goal_d;
+    for (unsigned i = 0; i < 3; i++)
+    {
+        std::normal_distribution<double> distr_d(goal_d[i], SIGMA_D[i]);
+        new_goal_d.push_back(distr_d(gen));
+    }
+
+    return std::make_pair(new_goal_s, new_goal_d);
+}
+
+typedef std::tuple<vector<double>, vector<double>, double> Trajectory;
+
+Trajectory findTrajectory(
+    vector<double> start_s, vector<double> start_d,
+    const Vehicle &target_vehicle, vector<double> delta, double T, const Context &Ctx)
+{
+    // TODO: experiment with time range to search
+    const double timestep = 0.5;
+    const double curr_pred_time = Ctx.end_path_time();
+    const unsigned N_SAMPLES = 10;
+
+    double t = T - 4.0 * timestep;
+    vector<std::tuple<vector<double>, vector<double>, double>> goals;
+    while (t <= T + 4.0 * timestep)
+    {
+        vector<double> target_state =
+            add_vectors(target_vehicle.state_predict(curr_pred_time + T), delta);
+
+        vector<double> goal_s { target_state[0], target_state[1], target_state[2] };
+        vector<double> goal_d { target_state[3], target_state[4], target_state[5] };
+
+        for (unsigned i = 0; i < N_SAMPLES; i++)
+        {
+            auto perturbed = perturb_goal(goal_s, goal_d);
+            goals.push_back(std::make_tuple(perturbed.first, perturbed.second, t));
+        }
+
+        t += timestep;
+    }
+
+    vector<Trajectory> trajectories;
+    for (auto &goal : goals)
+    {
+        vector<double> s_goal;
+        vector<double> d_goal;
+        double t;
+        std::tie(s_goal, d_goal, t) = goal;
+
+        auto s_coeffs = JMT(start_s, s_goal, t);
+        auto d_coeffs = JMT(start_d, d_goal, t);
+
+        trajectories.push_back(Trajectory(s_coeffs, d_coeffs, t));
+    }
+
+    return trajectories[0];
 }
 
 int main() {
