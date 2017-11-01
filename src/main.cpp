@@ -801,10 +801,35 @@ Trajectory findTrajectory(
     return trajectories[0];
 }
 
+// Evaluate a polynomial.
+double polyeval(vector<double> coeffs, double x) {
+    double result = 0.0;
+    for (int i = 0; i < coeffs.size(); i++) {
+        result += coeffs[i] * pow(x, i);
+    }
+    return result;
+}
+
 void convertTrajectoryToXY(
     Trajectory Traj, const StateInfo &Info, vector<double> &new_x, vector<double> &new_y)
 {
+    const unsigned NUM_SAMPLES = 5;
 
+    auto &s_coeffs  = std::get<0>(Traj);
+    auto &d_coeffs  = std::get<1>(Traj);
+    double duration = std::get<2>(Traj);
+
+    const double step = duration / (double)NUM_SAMPLES;
+
+    vector<double> xvals;
+    vector<double> yvals;
+
+    for (unsigned i = 0; i <= NUM_SAMPLES; i++)
+    {
+        double curr_t = step * (double)i;
+
+
+    }
 }
 
 int main() {
