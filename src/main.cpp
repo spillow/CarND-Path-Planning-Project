@@ -86,7 +86,6 @@ int NextWaypoint(double x, double y, double theta, const vector<double> &maps_x,
 	}
 
 	return closestWaypoint;
-
 }
 
 // Transform from Cartesian x,y coordinates to Frenet s,d coordinates
@@ -307,15 +306,58 @@ public:
 class StateInfo
 {
 public:
-    std::vector<double> previous_path_x;
-    std::vector<double> previous_path_y;
-    double end_path_s;
-    double end_path_d;
-    std::function<vector<double>(double, double)> getXY;
+    const std::vector<double> previous_path_x;
+    const std::vector<double> previous_path_y;
+    const double end_path_s;
+    const double end_path_d;
+    const Ego &ego;
+    const std::function<vector<double>(double, double)> getXY;
+    const std::function<vector<double>(double, double,double)> getFrenet;
 
     double end_path_time() const
     {
         return (double)previous_path_x.size() * TIME_STEP;
+    }
+
+    std::pair<double, double> end_path_sd_dot(unsigned step_back = 0) const
+    {
+        auto sd0 = get_end_point(0 + step_back);
+        auto sd1 = get_end_point(1 + step_back);
+
+        double sdot = (sd0.first - sd1.first) / TIME_STEP;
+        double ddot = (sd0.second - sd1.second) / TIME_STEP;
+
+        return std::make_pair(sdot, ddot);
+    }
+
+    std::pair<double, double> end_path_sd_dot_dot() const
+    {
+        auto sd0 = end_path_sd_dot(0);
+        auto sd1 = end_path_sd_dot(1);
+
+        double sdotdot = (sd0.first - sd1.first) / TIME_STEP;
+        double ddotdot = (sd0.second - sd1.second) / TIME_STEP;
+
+        return std::make_pair(sdotdot, ddotdot);
+    }
+private:
+    std::pair<double, double> get_end_point(unsigned step_back = 0) const
+    {
+        unsigned prev_size = previous_path_x.size();
+
+        if (prev_size < 2 + step_back)
+            return std::make_pair(ego.s, ego.d);
+
+        double ref_x = previous_path_x[prev_size - 1 - step_back];
+        double ref_y = previous_path_y[prev_size - 1 - step_back];
+
+        double ref_x_prev = previous_path_x[prev_size - 2 - step_back];
+        double ref_y_prev = previous_path_y[prev_size - 2 - step_back];
+
+        double ref_yaw = atan2(ref_y - ref_y_prev, ref_x - ref_x_prev);
+
+        auto sd = getFrenet(ref_x, ref_y, ref_yaw);
+        return std::make_pair(sd[0], sd[1]);
     }
 };
 
@@ -352,11 +394,13 @@ StateInfo getStateInfo(
     const std::vector<double> &previous_path_y,
     double end_path_s,
     double end_path_d,
-    std::function<vector<double>(double, double)> getXY)
+    const Ego &ego,
+    std::function<vector<double>(double, double)> getXY,
+    std::function<vector<double>(double, double,double)> getFrenet)
 {
     return {
         previous_path_x, previous_path_y,
-        end_path_s, end_path_d, getXY
+        end_path_s, end_path_d, ego, getXY, getFrenet
     };
 }
 
@@ -757,6 +801,12 @@ Trajectory findTrajectory(
     return trajectories[0];
 }
 
+void convertTrajectoryToXY(
+    Trajectory Traj, const StateInfo &Info, vector<double> &new_x, vector<double> &new_y)
+{
+
+}
+
 int main() {
   uWS::Hub h;
 
@@ -799,6 +849,11 @@ int main() {
       return ::getXY(s, d, map_waypoints_s, map_waypoints_x, map_waypoints_y);
   };
 
+  auto getFrenet = [&](double x, double y, double theta)
+  {
+      return ::getFrenet(x, y, theta, map_waypoints_x, map_waypoints_y);
+  };
+
   double ref_vel = 0; // mph
   unsigned lane = 1;
 
@@ -806,7 +861,7 @@ int main() {
 
   h.onMessage(
     [&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy,
-     &ref_vel,&lane,&State,&getXY]
+     &ref_vel,&lane,&State,&getXY,&getFrenet]
     (uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length, uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -843,11 +898,14 @@ int main() {
           	// Sensor Fusion Data, a list of all other cars on the same side of the road.
           	const std::vector<std::vector<double>> sensor_fusion = j[1]["sensor_fusion"];
 
-            const Context Ctx =
-                getContext(
-                    getSensorData(sensor_fusion, car_x, car_y, car_s,
-                        car_d, car_yaw, car_speed),
-                    getStateInfo(previous_path_x, previous_path_y, end_path_s, end_path_d, getXY));
+            SensorData Data = getSensorData(sensor_fusion, car_x, car_y, car_s,
+                car_d, car_yaw, car_speed);
+
+            StateInfo Info = getStateInfo(
+                previous_path_x, previous_path_y, end_path_s, end_path_d, Data.ego,
+                getXY, getFrenet);
+
+            const Context Ctx = getContext(Data, Info);
 
             const unsigned prev_size = previous_path_x.size();
 
@@ -934,7 +992,18 @@ int main() {
                 if (end_path_d > left && end_path_d < right)
                     State = KEEP_LANE;
 
-                fill_straight_path(Ctx, ref_vel, lane, new_x, new_y);
+                auto sddot = Info.end_path_sd_dot();
+                auto sddotdot = Info.end_path_sd_dot_dot();
+
+                vector<double> start_s = { end_path_s, sddot.first, sddotdot.first };
+                vector<double> start_d = { end_path_d, sddot.second, sddotdot.second };
+
+                vector<double> delta = { 0, 0, 0, 0, 0, 0 };
+                double T = 3.0;
+
+                auto Traj = findTrajectory(start_s, start_d, Data.vehicles[0], delta, T, Ctx);
+                convertTrajectoryToXY(Traj, Info, new_x, new_y);
+                //fill_straight_path(Ctx, ref_vel, lane, new_x, new_y);
                 break;
             }
             default:
