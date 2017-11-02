@@ -170,6 +170,7 @@ vector<double> getXY(
 }
 
 const double TIME_STEP = 0.02; // 20 ms
+const unsigned BUFFER_SIZE = 50;
 
 class Ego
 {
@@ -636,7 +637,7 @@ void fill_straight_path(
 
     double x_add_on = 0;
 
-    for (int i = 1; i < 50 - prev_size; i++)
+    for (int i = 1; i < BUFFER_SIZE - prev_size; i++)
     {
         // N * TIME_STEP * v = d
         double N = (target_dist / (TIME_STEP * ref_vel / 2.24));
@@ -823,12 +824,47 @@ void convertTrajectoryToXY(
 
     vector<double> xvals;
     vector<double> yvals;
+    vector<double> tvals;
+
+    unsigned prev_size = Info.previous_path_x.size();
+
+    if (prev_size >= 2)
+    {
+        xvals.push_back(Info.previous_path_x[prev_size - 2]);
+        yvals.push_back(Info.previous_path_y[prev_size - 2]);
+        tvals.push_back(-2 * TIME_STEP);
+
+        xvals.push_back(Info.previous_path_x[prev_size - 1]);
+        yvals.push_back(Info.previous_path_y[prev_size - 1]);
+        tvals.push_back(-1 * TIME_STEP);
+    }
 
     for (unsigned i = 0; i <= NUM_SAMPLES; i++)
     {
         double curr_t = step * (double)i;
+        tvals.push_back(curr_t);
 
+        double sval = polyeval(s_coeffs, curr_t);
+        double dval = polyeval(d_coeffs, curr_t);
 
+        auto xy = Info.getXY(sval, dval);
+
+        xvals.push_back(xy[0]);
+        yvals.push_back(xy[1]);
+    }
+
+    tk::spline x_spline;
+    x_spline.set_points(tvals, xvals);
+
+    tk::spline y_spline;
+    y_spline.set_points(tvals, yvals);
+
+    for (int i = 0; i < BUFFER_SIZE - prev_size; i++)
+    {
+        double curr_t = (double)i * TIME_STEP;
+
+        new_x.push_back(x_spline(curr_t));
+        new_y.push_back(y_spline(curr_t));
     }
 }
 
