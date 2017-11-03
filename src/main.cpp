@@ -142,8 +142,45 @@ vector<double> getFrenet(
 // Transform from Frenet s,d coordinates to Cartesian x,y
 vector<double> getXY(
     double s, double d,
-    const vector<double> &maps_s, const vector<double> &maps_x, const vector<double> &maps_y)
+    const vector<double> &maps_s, const vector<double> &maps_x, const vector<double> &maps_y,
+    const vector<double> &maps_dx, const vector<double> &maps_dy)
 {
+#if 1
+	int prev_wp = -1;
+
+	while(s > maps_s[prev_wp+1] && (prev_wp < (int)(maps_s.size()-1) ))
+	{
+		prev_wp++;
+	}
+
+	int wp2 = (prev_wp+1)%maps_x.size();
+	int wp3 = (prev_wp+2)%maps_x.size();
+
+    auto fillpoints = [&](tk::spline &s, const vector<double> &mx, const vector<double> &my)
+    {
+        vector<double> xs = { mx[prev_wp], mx[wp2], mx[wp3] };
+        vector<double> ys = { my[prev_wp], my[wp2], my[wp3] };
+
+        s.set_points(xs, ys);
+    };
+
+    tk::spline spline_x_s;
+    fillpoints(spline_x_s, maps_s, maps_x);
+
+    tk::spline spline_y_s;
+    fillpoints(spline_y_s, maps_s, maps_y);
+
+    tk::spline spline_dx_s;
+    fillpoints(spline_dx_s, maps_s, maps_dx);
+
+    tk::spline spline_dy_s;
+    fillpoints(spline_dy_s, maps_s, maps_dy);
+
+    double x = spline_x_s(s) + d * spline_dx_s(s);
+    double y = spline_y_s(s) + d * spline_dy_s(s);
+
+	return {x,y};
+#else
 	int prev_wp = -1;
 
 	while(s > maps_s[prev_wp+1] && (prev_wp < (int)(maps_s.size()-1) ))
@@ -166,7 +203,7 @@ vector<double> getXY(
 	double y = seg_y + d*sin(perp_heading);
 
 	return {x,y};
-
+#endif
 }
 
 const double TIME_STEP = 0.02; // 20 ms
@@ -757,29 +794,35 @@ std::pair<vector<double>, vector<double>> perturb_goal(vector<double> goal_s, ve
 
 typedef std::tuple<vector<double>, vector<double>, double> Trajectory;
 
+void print_vec(const vector<double> &vec)
+{
+    std::cout << "[ ";
+    for (unsigned i = 0; i < vec.size(); i++)
+    {
+        std::cout << vec[i] << ",";
+    }
+
+    std::cout << " ]" << std::endl;
+}
+
+
 Trajectory findTrajectory(
-    vector<double> start_s, vector<double> start_d,
-    const Vehicle &target_vehicle, vector<double> delta, double T, const Context &Ctx)
+    vector<double> start_s, vector<double> start_d, vector<double> goal_s, vector<double> goal_d,
+    double T, const Context &Ctx)
 {
     // TODO: experiment with time range to search
     const double timestep = 0.5;
-    const double curr_pred_time = Ctx.end_path_time();
     const unsigned N_SAMPLES = 10;
 
     double t = T - 4.0 * timestep;
     vector<std::tuple<vector<double>, vector<double>, double>> goals;
     while (t <= T + 4.0 * timestep)
     {
-        vector<double> target_state =
-            add_vectors(target_vehicle.state_predict(curr_pred_time + T), delta);
-
-        vector<double> goal_s { target_state[0], target_state[1], target_state[2] };
-        vector<double> goal_d { target_state[3], target_state[4], target_state[5] };
-
         for (unsigned i = 0; i < N_SAMPLES; i++)
         {
-            auto perturbed = perturb_goal(goal_s, goal_d);
-            goals.push_back(std::make_tuple(perturbed.first, perturbed.second, t));
+            //auto perturbed = perturb_goal(goal_s, goal_d);
+            //goals.push_back(std::make_tuple(perturbed.first, perturbed.second, t));
+            goals.push_back(std::make_tuple(goal_s, goal_d, t));
         }
 
         t += timestep;
@@ -814,7 +857,7 @@ double polyeval(vector<double> coeffs, double x) {
 void convertTrajectoryToXY(
     Trajectory Traj, const StateInfo &Info, vector<double> &new_x, vector<double> &new_y)
 {
-    const unsigned NUM_SAMPLES = 5;
+    const unsigned NUM_SAMPLES = 100;
 
     auto &s_coeffs  = std::get<0>(Traj);
     auto &d_coeffs  = std::get<1>(Traj);
@@ -832,20 +875,22 @@ void convertTrajectoryToXY(
     {
         xvals.push_back(Info.previous_path_x[prev_size - 2]);
         yvals.push_back(Info.previous_path_y[prev_size - 2]);
-        tvals.push_back(-2 * TIME_STEP);
-
-        xvals.push_back(Info.previous_path_x[prev_size - 1]);
-        yvals.push_back(Info.previous_path_y[prev_size - 1]);
         tvals.push_back(-1 * TIME_STEP);
     }
 
-    for (unsigned i = 0; i <= NUM_SAMPLES; i++)
+    vector<double> s_vals_test;
+    vector<double> d_vals_test;
+
+    for (unsigned i = 1; i <= NUM_SAMPLES; i++)
     {
         double curr_t = step * (double)i;
         tvals.push_back(curr_t);
 
         double sval = polyeval(s_coeffs, curr_t);
         double dval = polyeval(d_coeffs, curr_t);
+
+        s_vals_test.push_back(sval);
+        d_vals_test.push_back(dval);
 
         auto xy = Info.getXY(sval, dval);
 
@@ -859,13 +904,24 @@ void convertTrajectoryToXY(
     tk::spline y_spline;
     y_spline.set_points(tvals, yvals);
 
-    for (int i = 0; i < BUFFER_SIZE - prev_size; i++)
+    for (int i = 1; i < BUFFER_SIZE - prev_size + 1; i++)
     {
         double curr_t = (double)i * TIME_STEP;
 
         new_x.push_back(x_spline(curr_t));
         new_y.push_back(y_spline(curr_t));
     }
+}
+
+vector<double> polyderiv(const vector<double> &coeffs)
+{
+    vector<double> newcoeffs;
+    for (unsigned i = 1; i < coeffs.size(); i++)
+    {
+        newcoeffs.push_back(coeffs[i] * double(i));
+    }
+
+    return newcoeffs;
 }
 
 int main() {
@@ -907,7 +963,8 @@ int main() {
 
   auto getXY = [&](double s, double d)
   { 
-      return ::getXY(s, d, map_waypoints_s, map_waypoints_x, map_waypoints_y);
+      return ::getXY(
+          s, d, map_waypoints_s, map_waypoints_x, map_waypoints_y, map_waypoints_dx, map_waypoints_dy);
   };
 
   auto getFrenet = [&](double x, double y, double theta)
@@ -920,9 +977,17 @@ int main() {
 
   BehaviorState State = KEEP_LANE;
 
+  double sdot = 0;
+  double sdotdot = 0;
+  double ddot = 0;
+  double ddotdot = 0;
+  double bigT = 40;
+  double dpred = 0;
+  double spred = 0;
+
   h.onMessage(
     [&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy,
-     &ref_vel,&lane,&State,&getXY,&getFrenet]
+     &ref_vel,&lane,&State,&getXY,&getFrenet,&sdot,&sdotdot,&ddot,&ddotdot,&bigT,&dpred,&spred]
     (uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length, uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -970,9 +1035,18 @@ int main() {
 
             const unsigned prev_size = previous_path_x.size();
 
+            std::cout << "prev_size = " << prev_size << std::endl;
+
             const double end_path_time = Ctx.Info.end_path_time();
 
             /////
+
+            if (prev_size == 0)
+            {
+                dpred = car_d;
+                spred = car_s;
+            }
+
 
             vector<double> next_x_vals;
             vector<double> next_y_vals;
@@ -990,6 +1064,31 @@ int main() {
             {
             case KEEP_LANE:
             {
+                //double the_s_val = (prev_size > 0) ? end_path_s : car_s;
+                //double the_d_val = (prev_size > 0) ? end_path_d : car_d;
+
+                vector<double> start_s = { spred, sdot, sdotdot };
+                vector<double> start_d = { dpred, ddot, ddotdot };
+                vector<double> goal_d = { dpred, 0, 0 };
+                vector<double> goal_s = { 1600, 10, 0 };
+
+                auto Traj = findTrajectory(start_s, start_d, goal_s, goal_d, bigT, Ctx);
+                convertTrajectoryToXY(Traj, Info, new_x, new_y);
+                unsigned num_new_points = new_x.size();
+                double time_projected = (double)num_new_points * TIME_STEP;
+                bigT -= time_projected;
+                auto sdot_coeffs = polyderiv(std::get<0>(Traj));
+                spred = polyeval(std::get<0>(Traj), time_projected);
+                dpred = polyeval(std::get<1>(Traj), time_projected);
+                auto sdotdot_coeffs = polyderiv(sdot_coeffs);
+                sdot = polyeval(sdot_coeffs, time_projected);
+                sdotdot = polyeval(sdotdot_coeffs, time_projected);
+                auto ddot_coeffs = polyderiv(std::get<1>(Traj));
+                auto ddotdot_coeffs = polyderiv(ddot_coeffs);
+                ddot = polyeval(ddot_coeffs, time_projected);
+                ddotdot = polyeval(ddotdot_coeffs, time_projected);
+                break;
+                /*
                 std::cout << "State = KEEP_LANE" << std::endl;
                 bool ShouldChange = look_for_lane_change(Ctx);
                 if (ShouldChange)
@@ -1005,6 +1104,7 @@ int main() {
 
                 fill_straight_path(Ctx, ref_vel, lane, new_x, new_y);
                 break;
+                */
             }
             case PREPARE_CHANGE_LANE:
             {
@@ -1053,23 +1153,13 @@ int main() {
                 if (end_path_d > left && end_path_d < right)
                     State = KEEP_LANE;
 
-                auto sddot = Info.end_path_sd_dot();
-                auto sddotdot = Info.end_path_sd_dot_dot();
-
-                vector<double> start_s = { end_path_s, sddot.first, sddotdot.first };
-                vector<double> start_d = { end_path_d, sddot.second, sddotdot.second };
-
-                vector<double> delta = { 0, 0, 0, 0, 0, 0 };
-                double T = 3.0;
-
-                auto Traj = findTrajectory(start_s, start_d, Data.vehicles[0], delta, T, Ctx);
-                convertTrajectoryToXY(Traj, Info, new_x, new_y);
-                //fill_straight_path(Ctx, ref_vel, lane, new_x, new_y);
+                fill_straight_path(Ctx, ref_vel, lane, new_x, new_y);
                 break;
             }
             default:
                 assert(0 && "unknown state!");
             }
+
 
             for (int i = 0; i < new_x.size(); i++)
             {
@@ -1084,7 +1174,7 @@ int main() {
 
           	auto msg = "42[\"control\","+ msgJson.dump()+"]";
 
-          	//this_thread::sleep_for(chrono::milliseconds(1000));
+          	//this_thread::sleep_for(chrono::milliseconds(100));
           	ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
           
         }
