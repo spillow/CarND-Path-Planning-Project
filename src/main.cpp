@@ -878,9 +878,6 @@ void convertTrajectoryToXY(
         tvals.push_back(-1 * TIME_STEP);
     }
 
-    vector<double> s_vals_test;
-    vector<double> d_vals_test;
-
     for (unsigned i = 1; i <= NUM_SAMPLES; i++)
     {
         double curr_t = step * (double)i;
@@ -888,9 +885,6 @@ void convertTrajectoryToXY(
 
         double sval = polyeval(s_coeffs, curr_t);
         double dval = polyeval(d_coeffs, curr_t);
-
-        s_vals_test.push_back(sval);
-        d_vals_test.push_back(dval);
 
         auto xy = Info.getXY(sval, dval);
 
@@ -1160,6 +1154,7 @@ int main() {
                 assert(0 && "unknown state!");
             }
 
+            //update_car_prediction_state(num_new_points, Traj);
 
             for (int i = 0; i < new_x.size(); i++)
             {
