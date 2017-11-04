@@ -551,7 +551,7 @@ void fill_straight_path(
 
     double x_add_on = 0;
 
-    for (int i = 1; i < 50 - prev_size; i++)
+    for (int i = 1; i < 10 - prev_size; i++)
     {
         // N * TIME_STEP * v = d
         double N = (target_dist / (TIME_STEP * ref_vel / 2.24));
@@ -702,7 +702,7 @@ int main() {
                         }
                         else
                         {
-                            if (ref_vel < 49.5)
+                            if (ref_vel < 49.8)
                                 ref_vel += 0.224;
                         }
 
@@ -720,17 +720,6 @@ int main() {
                         }
                         else
                         {
-                            /*
-                            if (look_for_lane_change(Ctx))
-                            {
-                                ref_vel -= 0.224;
-                            }
-                            else
-                            {
-                                if (ref_vel < 49.5)
-                                    ref_vel += 0.224;
-                            }
-                            */
                             double dist;
                             const Vehicle *InFront =
                                 get_vehicle_in_front(Ctx, Ctx.Data.ego.get_lane(), dist);
@@ -775,8 +764,10 @@ int main() {
                                     std::cout << "slowing..." << std::endl;
                                 }
                             }
+                            else if (ref_vel < 49.8)
+                                ref_vel += 0.224;
                         }
-                        else if (ref_vel < 49.5)
+                        else if (ref_vel < 49.8)
                             ref_vel += 0.224;
 
                         fill_straight_path(Ctx, ref_vel, lane, new_x, new_y);
