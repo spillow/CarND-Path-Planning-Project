@@ -302,10 +302,12 @@ Context getContext(const SensorData &Data, const StateInfo &Info)
     return{ Info, Data };
 }
 
-bool open_lane(const Context &Ctx, unsigned lane)
+bool open_lane(const Context &Ctx, unsigned lane, vector<Vehicle> &block_vehicles)
 {
     auto &Vehicles = Ctx.Data.vehicles;
     double t = Ctx.end_path_time();
+
+    bool ret = true;
 
     for (auto &V : Vehicles)
     {
@@ -315,7 +317,10 @@ bool open_lane(const Context &Ctx, unsigned lane)
         double dist_diff = abs(Ctx.Info.end_path_s - V._s(t));
 
         if (dist_diff < 7.0)
-            return false;
+        {
+            block_vehicles.push_back(V);
+            ret = false;
+        }
 
         if (dist_diff < 30.0)
         {
@@ -329,11 +334,12 @@ bool open_lane(const Context &Ctx, unsigned lane)
                 if (Ctx.Data.ego.ref_vel > V.speed())
                     continue;
             }
-            return false;
+            block_vehicles.push_back(V);
+            ret = false;
         }
     }
 
-    return true;
+    return ret;
 }
 
 bool look_for_lane_change(const Context &Ctx)
@@ -381,19 +387,19 @@ std::vector<Vehicle> cars_ahead(const Context &Ctx, double s_begin, double s_end
     return in_range;
 }
 
-bool check_lane_opening(const Context &Ctx, unsigned &lane)
+bool check_lane_opening(const Context &Ctx, unsigned &lane, vector<Vehicle> &blocking_vehicles)
 {
     bool ret = false;
 
     if (lane == 0)
     {
-        if (ret = open_lane(Ctx, 1))
+        if (ret = open_lane(Ctx, 1, blocking_vehicles))
             lane = 1;
     }
     else if (lane == 1)
     {
-        bool left = open_lane(Ctx, 0);
-        bool right = open_lane(Ctx, 2);
+        bool left = open_lane(Ctx, 0, blocking_vehicles);
+        bool right = open_lane(Ctx, 2, blocking_vehicles);
 
         ret = left || right;
 
@@ -410,7 +416,7 @@ bool check_lane_opening(const Context &Ctx, unsigned &lane)
             }
             else
             {
-                lane = 1;
+                lane = 2;
             }
         }
         else if (left)
@@ -420,7 +426,7 @@ bool check_lane_opening(const Context &Ctx, unsigned &lane)
     }
     else if (lane == 2)
     {
-        if (ret = open_lane(Ctx, 1))
+        if (ret = open_lane(Ctx, 1, blocking_vehicles))
             lane = 1;
     }
     else
@@ -431,7 +437,7 @@ bool check_lane_opening(const Context &Ctx, unsigned &lane)
     return ret;
 }
 
-const Vehicle *get_vehicle_in_front(const Context &Ctx)
+const Vehicle *get_vehicle_in_front(const Context &Ctx, unsigned lane, double &dist_s)
 {
     auto &Vehicles = Ctx.Data.vehicles;
     double t = Ctx.end_path_time();
@@ -442,7 +448,7 @@ const Vehicle *get_vehicle_in_front(const Context &Ctx)
 
     for (auto &V : Vehicles)
     {
-        if (V.get_lane() == Ctx.Data.ego.get_lane())
+        if (V.get_lane() == lane)
         {
             double vehicle_pred_s = V._s(t);
 
@@ -450,6 +456,7 @@ const Vehicle *get_vehicle_in_front(const Context &Ctx)
             {
                 if (vehicle_pred_s < min_s)
                 {
+                    dist_s = vehicle_pred_s - car_pred_s;
                     min_s = vehicle_pred_s;
                     Closest = &V;
                 }
@@ -683,12 +690,13 @@ int main() {
                     {
                         std::cout << "State = KEEP_LANE, lane = " << lane << std::endl;
                         bool ShouldChange = look_for_lane_change(Ctx);
+                        vector<Vehicle> blocking_vehicles;
                         if (ShouldChange)
                         {
                             State = PREPARE_CHANGE_LANE;
                             ref_vel -= 0.224;
                         }
-                        else if ((lane == 0 || lane == 2) && check_lane_opening(Ctx, lane))
+                        else if ((lane == 0 || lane == 2) && check_lane_opening(Ctx, lane, blocking_vehicles))
                         {
                             State = CHANGE_LANE;
                         }
@@ -704,13 +712,15 @@ int main() {
                     case PREPARE_CHANGE_LANE:
                     {
                         std::cout << "State = PREPARE_CHANGE_LANE, lane = " << lane << std::endl;
-                        bool LaneOpening = check_lane_opening(Ctx, lane);
+                        vector<Vehicle> blocking_vehicles;
+                        bool LaneOpening = check_lane_opening(Ctx, lane, blocking_vehicles);
                         if (LaneOpening)
                         {
                             State = CHANGE_LANE;
                         }
                         else
                         {
+                            /*
                             if (look_for_lane_change(Ctx))
                             {
                                 ref_vel -= 0.224;
@@ -720,21 +730,24 @@ int main() {
                                 if (ref_vel < 49.5)
                                     ref_vel += 0.224;
                             }
-                            /*
-                            const Vehicle *InFront = get_vehicle_in_front(Ctx);
+                            */
+                            double dist;
+                            const Vehicle *InFront =
+                                get_vehicle_in_front(Ctx, Ctx.Data.ego.get_lane(), dist);
 
                             if (InFront)
                             {
-                            if (ref_vel > InFront->speed())
-                            ref_vel -= 0.1;
-                            else
-                            ref_vel += 0.224;
+                                if (dist < 10.0)
+                                    ref_vel -= 0.15;
+                                else if (ref_vel > InFront->speed() && dist < 20.0)
+                                    ref_vel -= 0.15;
+                                else if (ref_vel < 49.5 && dist > 30.0)
+                                    ref_vel += 0.224;
                             }
                             else
                             {
-                            State = KEEP_LANE;
+                                State = KEEP_LANE;
                             }
-                            */
                         }
                         fill_straight_path(Ctx, ref_vel, lane, new_x, new_y);
                         break;
@@ -748,6 +761,23 @@ int main() {
                         double right = mid_lane_d + 0.5;
                         if (curr_d > left && curr_d < right)
                             State = KEEP_LANE;
+
+                        double dist;
+                        const Vehicle *InFront = get_vehicle_in_front(Ctx, lane, dist);
+
+                        if (InFront)
+                        {
+                            if (dist < 20.0)
+                            {
+                                if (ref_vel > InFront->speed())
+                                {
+                                    ref_vel -= 0.15;
+                                    std::cout << "slowing..." << std::endl;
+                                }
+                            }
+                        }
+                        else if (ref_vel < 49.5)
+                            ref_vel += 0.224;
 
                         fill_straight_path(Ctx, ref_vel, lane, new_x, new_y);
                         break;
