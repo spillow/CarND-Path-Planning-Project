@@ -1008,7 +1008,7 @@ int main() {
                     {
                         auto &E = EInfo;
 
-                        if (E.sdot < 20) 
+                        if (E.sdot < 21.5) 
                         {
                             E.sdot += 0.1;
                         }
@@ -1020,6 +1020,10 @@ int main() {
                         double time_projected = (double)num_new_points * TIME_STEP;
                         // sf = s0 + sdot*t
                         E.s += E.sdot * time_projected;
+
+                        // TODO:
+                        // cost function for acceleration and lane position
+                        // JMT + perturbation search for d
 
                         break;
                         /*
