@@ -811,7 +811,7 @@ double polyeval(const vector<double> &coeffs, double x) {
 void convertTrajectoryToXY(
     Trajectory Traj, const StateInfo &Info, vector<double> &new_x, vector<double> &new_y)
 {
-    const unsigned NUM_SAMPLES = 5;
+    const unsigned NUM_SAMPLES = 10;
 
     auto &s_coeffs = std::get<0>(Traj);
     auto &d_coeffs = std::get<1>(Traj);
