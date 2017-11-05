@@ -9,13 +9,6 @@
 #include "Eigen-3.3/Eigen/QR"
 #include "json.hpp"
 #include "spline.h"
-#include <random>
-
-#include "Eigen-3.3/Eigen/Dense"
-
-using namespace std;
-using Eigen::MatrixXd;
-using Eigen::VectorXd;
 
 using namespace std;
 
@@ -145,45 +138,8 @@ vector<double> getFrenet(
 // Transform from Frenet s,d coordinates to Cartesian x,y
 vector<double> getXY(
     double s, double d,
-    const vector<double> &maps_s, const vector<double> &maps_x, const vector<double> &maps_y,
-    const vector<double> &maps_dx, const vector<double> &maps_dy)
+    const vector<double> &maps_s, const vector<double> &maps_x, const vector<double> &maps_y)
 {
-#if 1
-    int prev_wp = -1;
-
-    while (s > maps_s[prev_wp + 1] && (prev_wp < (int)(maps_s.size() - 1)))
-    {
-        prev_wp++;
-    }
-
-    int wp2 = (prev_wp + 1) % maps_x.size();
-    int wp3 = (prev_wp + 2) % maps_x.size();
-
-    auto fillpoints = [&](tk::spline &s, const vector<double> &mx, const vector<double> &my)
-    {
-        vector<double> xs = { mx[prev_wp], mx[wp2], mx[wp3] };
-        vector<double> ys = { my[prev_wp], my[wp2], my[wp3] };
-
-        s.set_points(xs, ys);
-    };
-
-    tk::spline spline_x_s;
-    fillpoints(spline_x_s, maps_s, maps_x);
-
-    tk::spline spline_y_s;
-    fillpoints(spline_y_s, maps_s, maps_y);
-
-    tk::spline spline_dx_s;
-    fillpoints(spline_dx_s, maps_s, maps_dx);
-
-    tk::spline spline_dy_s;
-    fillpoints(spline_dy_s, maps_s, maps_dy);
-
-    double x = spline_x_s(s) + d * spline_dx_s(s);
-    double y = spline_y_s(s) + d * spline_dy_s(s);
-
-    return { x,y };
-#else
     int prev_wp = -1;
 
     while (s > maps_s[prev_wp + 1] && (prev_wp < (int)(maps_s.size() - 1)))
@@ -206,11 +162,12 @@ vector<double> getXY(
     double y = seg_y + d*sin(perp_heading);
 
     return{ x,y };
-#endif
+
 }
 
 const double TIME_STEP = 0.02; // 20 ms
-const unsigned BUFFER_SIZE = 50;
+const double BUFFER_SIZE = 50;
+const double TOP_VEL = 49.5; // mph
 
 class Ego
 {
@@ -256,41 +213,9 @@ public:
         return s + speed() * t;
     }
 
-    double _sd(double t = 0.0) const
-    {
-        return speed();
-    }
-
-    double _sdd(double t = 0.0) const
-    {
-        return 0.0;
-    }
-
     double _d(double t = 0.0) const
     {
         return d;
-    }
-
-    double _dd(double t = 0.0) const
-    {
-        return 0.0;
-    }
-
-    double _ddd(double t = 0.0) const
-    {
-        return 0.0;
-    }
-
-    vector<double> state_predict(double t = 0.0) const
-    {
-        return {
-            _s(t) + _sd(t) * t + 0.5 * _sdd(t) * t * t,
-            _sd(t) + _sdd(t) * t,
-            _sdd(t),
-            _d(t) + _dd(t) * t + 0.5 * _ddd(t) * t * t,
-            _dd(t) + _ddd(t) * t,
-            _ddd(t)
-        };
     }
 
     unsigned get_lane() const
@@ -568,7 +493,16 @@ void fill_straight_path(
 
     double car_pred_s = (prev_size > 0) ? end_path_s : car_s;
 
-    if (prev_size < 2)
+    /*
+    std::vector<double> ree = getXY(car_s, Ego.d);
+
+    std::cout << "actual (x,y) = " << "(" << car_x << "," << car_y << "), from (s,d) = "
+        << "(" << ree[0] << "," << ree[1] << ")" << std::endl;
+
+    std::cout << "car_d = " << Ego.d << std::endl;
+    */
+
+    if (prev_size < 10)
     {
         double prev_car_x = car_x - cos(car_yaw);
         double prev_car_y = car_y - sin(car_yaw);
@@ -584,8 +518,8 @@ void fill_straight_path(
         ref_x = previous_path_x[prev_size - 1];
         ref_y = previous_path_y[prev_size - 1];
 
-        double ref_x_prev = previous_path_x[prev_size - 2];
-        double ref_y_prev = previous_path_y[prev_size - 2];
+        double ref_x_prev = previous_path_x[prev_size - 10];
+        double ref_y_prev = previous_path_y[prev_size - 10];
 
         ref_yaw = atan2(ref_y - ref_y_prev, ref_x - ref_x_prev);
 
@@ -628,10 +562,11 @@ void fill_straight_path(
 
     double x_add_on = 0;
 
+    // N * TIME_STEP * v = d
+    double N = (target_dist / (TIME_STEP * ref_vel / 2.24));
+
     for (int i = 1; i < BUFFER_SIZE - prev_size; i++)
     {
-        // N * TIME_STEP * v = d
-        double N = (target_dist / (TIME_STEP * ref_vel / 2.24));
         double x_point = x_add_on + target_x / N;
         double y_point = s(x_point);
 
@@ -650,238 +585,6 @@ void fill_straight_path(
         new_y.push_back(y_point);
     }
 }
-
-vector<double> JMT(vector<double> start, vector <double> end, double T)
-{
-    /*
-    Calculate the Jerk Minimizing Trajectory that connects the initial state
-    to the final state in time T.
-
-    INPUTS
-
-    start - the vehicles start location given as a length three array
-    corresponding to initial values of [s, s_dot, s_double_dot]
-
-    end   - the desired end state for vehicle. Like "start" this is a
-    length three array.
-
-    T - The duration, in seconds, over which this maneuver should occur.
-
-    OUTPUT
-    an array of length 6, each value corresponding to a coefficent in the polynomial
-    s(t) = a_0 + a_1 * t + a_2 * t**2 + a_3 * t**3 + a_4 * t**4 + a_5 * t**5
-
-    EXAMPLE
-
-    > JMT( [0, 10, 0], [10, 10, 0], 1)
-    [0.0, 10.0, 0.0, 0.0, 0.0, 0.0]
-    */
-
-    double si = start[0];
-    double sid = start[1];
-    double sidd = start[2];
-
-    double sf = end[0];
-    double sfd = end[1];
-    double sfdd = end[2];
-
-    double a0 = si;
-    double a1 = sid;
-    double a2 = 0.5*sidd;
-
-    MatrixXd lhs = MatrixXd(3, 3);
-    VectorXd rhs = VectorXd(3);
-
-    double T2 = T*T;
-    double T3 = T2*T;
-    double T4 = T3*T;
-    double T5 = T4*T;
-
-    lhs << T3, T4, T5,
-        3 * T2, 4 * T3, 5 * T4,
-        6 * T, 12 * T2, 20 * T3;
-
-    rhs << sf - (si + sid*T + 0.5*sidd*T2),
-        sfd - (sid + sidd*T),
-        sfdd - sidd;
-
-    VectorXd res = lhs.inverse() * rhs;
-
-    return{ a0, a1, a2, res[0], res[1], res[2] };
-}
-
-vector<double> add_vectors(const vector<double> &a, const vector<double> &b)
-{
-    assert(a.size() == b.size());
-    vector<double> newvec;
-    for (unsigned i = 0; i < a.size(); i++)
-    {
-        newvec.push_back(a[i] + b[i]);
-    }
-
-    return newvec;
-}
-
-std::pair<vector<double>, vector<double>> perturb_goal(vector<double> goal_s, vector<double> goal_d)
-{
-    vector<double> SIGMA_S{ 10.0, 4.0, 2.0 };
-    vector<double> SIGMA_D{ 1.0, 1.0, 1.0 };
-
-    default_random_engine gen;
-
-    vector<double> new_goal_s;
-    for (unsigned i = 0; i < 3; i++)
-    {
-        std::normal_distribution<double> distr_s(goal_s[i], SIGMA_S[i]);
-        new_goal_s.push_back(distr_s(gen));
-    }
-
-    vector<double> new_goal_d;
-    for (unsigned i = 0; i < 3; i++)
-    {
-        std::normal_distribution<double> distr_d(goal_d[i], SIGMA_D[i]);
-        new_goal_d.push_back(distr_d(gen));
-    }
-
-    return std::make_pair(new_goal_s, new_goal_d);
-}
-
-typedef std::tuple<vector<double>, vector<double>, double> Trajectory;
-
-void print_vec(const vector<double> &vec)
-{
-    std::cout << "[ ";
-    for (unsigned i = 0; i < vec.size(); i++)
-    {
-        std::cout << vec[i] << ",";
-    }
-
-    std::cout << " ]" << std::endl;
-}
-
-
-Trajectory findTrajectory(
-    vector<double> start_s, vector<double> start_d, vector<double> goal_s, vector<double> goal_d,
-    double T, const Context &Ctx)
-{
-    // TODO: experiment with time range to search
-    const double timestep = 0.5;
-    const unsigned N_SAMPLES = 10;
-
-    double t = T - 4.0 * timestep;
-    vector<std::tuple<vector<double>, vector<double>, double>> goals;
-    while (t <= T + 4.0 * timestep)
-    {
-        for (unsigned i = 0; i < N_SAMPLES; i++)
-        {
-            //auto perturbed = perturb_goal(goal_s, goal_d);
-            //goals.push_back(std::make_tuple(perturbed.first, perturbed.second, t));
-            goals.push_back(std::make_tuple(goal_s, goal_d, t));
-        }
-
-        t += timestep;
-    }
-
-    vector<Trajectory> trajectories;
-    for (auto &goal : goals)
-    {
-        vector<double> s_goal;
-        vector<double> d_goal;
-        double t;
-        std::tie(s_goal, d_goal, t) = goal;
-
-        auto s_coeffs = JMT(start_s, s_goal, t);
-        auto d_coeffs = JMT(start_d, d_goal, t);
-
-        trajectories.push_back(Trajectory(s_coeffs, d_coeffs, t));
-    }
-
-    return trajectories[0];
-}
-
-// Evaluate a polynomial.
-double polyeval(const vector<double> &coeffs, double x) {
-    double result = 0.0;
-    for (int i = 0; i < coeffs.size(); i++) {
-        result += coeffs[i] * pow(x, i);
-    }
-    return result;
-}
-
-void convertTrajectoryToXY(
-    Trajectory Traj, const StateInfo &Info, vector<double> &new_x, vector<double> &new_y)
-{
-    const unsigned NUM_SAMPLES = 10;
-
-    auto &s_coeffs = std::get<0>(Traj);
-    auto &d_coeffs = std::get<1>(Traj);
-    double duration = std::get<2>(Traj);
-
-    const double step = duration / (double)NUM_SAMPLES;
-
-    vector<double> xvals;
-    vector<double> yvals;
-    vector<double> tvals;
-
-    unsigned prev_size = Info.previous_path_x.size();
-
-    if (prev_size >= 2)
-    {
-        xvals.push_back(Info.previous_path_x[prev_size - 2]);
-        yvals.push_back(Info.previous_path_y[prev_size - 2]);
-        tvals.push_back(-1 * TIME_STEP);
-    }
-
-    for (unsigned i = 1; i <= NUM_SAMPLES; i++)
-    {
-        double curr_t = step * (double)i;
-        tvals.push_back(curr_t);
-
-        double sval = polyeval(s_coeffs, curr_t);
-        double dval = polyeval(d_coeffs, curr_t);
-
-        auto xy = Info.getXY(sval, dval);
-
-        xvals.push_back(xy[0]);
-        yvals.push_back(xy[1]);
-    }
-
-    tk::spline x_spline;
-    x_spline.set_points(tvals, xvals);
-
-    tk::spline y_spline;
-    y_spline.set_points(tvals, yvals);
-
-    for (int i = 1; i < BUFFER_SIZE - prev_size + 1; i++)
-    {
-        double curr_t = (double)i * TIME_STEP;
-
-        new_x.push_back(x_spline(curr_t));
-        new_y.push_back(y_spline(curr_t));
-    }
-}
-
-vector<double> polyderiv(const vector<double> &coeffs)
-{
-    vector<double> newcoeffs;
-    for (unsigned i = 1; i < coeffs.size(); i++)
-    {
-        newcoeffs.push_back(coeffs[i] * double(i));
-    }
-
-    return newcoeffs;
-}
-
-struct EndPathInfo
-{
-    double s = 0;
-    double sdot = 0;
-    double sdotdot = 0;
-
-    double d = 0;
-    double ddot = 0;
-    double ddotdot = 0;
-};
 
 int main() {
     uWS::Hub h;
@@ -922,20 +625,17 @@ int main() {
 
     auto getXY = [&](double s, double d)
     {
-        return ::getXY(s, d,
-            map_waypoints_s, map_waypoints_x, map_waypoints_y, map_waypoints_dx, map_waypoints_dy);
+        return ::getXY(s, d, map_waypoints_s, map_waypoints_x, map_waypoints_y);
     };
 
     double ref_vel = 0; // mph
     unsigned lane = 1;
 
     BehaviorState State = KEEP_LANE;
-    EndPathInfo EInfo;
-    EInfo.d = 2 + 4 * (double)lane;
 
     h.onMessage(
         [&map_waypoints_x, &map_waypoints_y, &map_waypoints_s, &map_waypoints_dx, &map_waypoints_dy,
-        &ref_vel, &lane, &State, &getXY,&EInfo]
+        &ref_vel, &lane, &State, &getXY]
     (uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length, uWS::OpCode opCode) {
         // "42" at the start of the message means there's a websocket message event.
         // The 4 signifies a websocket message
@@ -972,21 +672,15 @@ int main() {
                     // Sensor Fusion Data, a list of all other cars on the same side of the road.
                     const std::vector<std::vector<double>> sensor_fusion = j[1]["sensor_fusion"];
 
-                    const SensorData Data =
-                        getSensorData(sensor_fusion, car_x, car_y, car_s,
-                            car_d, car_yaw, car_speed, ref_vel);
-
-                    const StateInfo Info =
-                        getStateInfo(previous_path_x, previous_path_y, end_path_s, end_path_d, getXY);
-
-                    const Context Ctx = getContext(Data, Info);
+                    const Context Ctx =
+                        getContext(
+                            getSensorData(sensor_fusion, car_x, car_y, car_s,
+                                car_d, car_yaw, car_speed, ref_vel),
+                            getStateInfo(previous_path_x, previous_path_y, end_path_s, end_path_d, getXY));
 
                     const unsigned prev_size = previous_path_x.size();
 
                     const double end_path_time = Ctx.Info.end_path_time();
-
-                    if (prev_size == 0)
-                        EInfo.s = car_s;
 
                     /////
 
@@ -1006,27 +700,6 @@ int main() {
                     {
                     case KEEP_LANE:
                     {
-                        auto &E = EInfo;
-
-                        if (E.sdot < 21.5) 
-                        {
-                            E.sdot += 0.1;
-                        }
-
-                        auto Traj = Trajectory({ E.s, E.sdot }, { E.d }, 3.0 );
-                        convertTrajectoryToXY(Traj, Info, new_x, new_y);
-
-                        unsigned num_new_points = new_x.size();
-                        double time_projected = (double)num_new_points * TIME_STEP;
-                        // sf = s0 + sdot*t
-                        E.s += E.sdot * time_projected;
-
-                        // TODO:
-                        // cost function for acceleration and lane position
-                        // JMT + perturbation search for d
-
-                        break;
-                        /*
                         std::cout << "State = KEEP_LANE, lane = " << lane << std::endl;
                         bool ShouldChange = look_for_lane_change(Ctx);
                         vector<Vehicle> blocking_vehicles;
@@ -1041,13 +714,12 @@ int main() {
                         }
                         else
                         {
-                            if (ref_vel < 49.8)
+                            if (ref_vel < TOP_VEL)
                                 ref_vel += 0.224;
                         }
 
                         fill_straight_path(Ctx, ref_vel, lane, new_x, new_y);
                         break;
-                        */
                     }
                     case PREPARE_CHANGE_LANE:
                     {
@@ -1104,10 +776,10 @@ int main() {
                                     std::cout << "slowing..." << std::endl;
                                 }
                             }
-                            else if (ref_vel < 49.8)
+                            else if (ref_vel < TOP_VEL)
                                 ref_vel += 0.224;
                         }
-                        else if (ref_vel < 49.8)
+                        else if (ref_vel < TOP_VEL)
                             ref_vel += 0.224;
 
                         fill_straight_path(Ctx, ref_vel, lane, new_x, new_y);
@@ -1130,9 +802,8 @@ int main() {
 
                     auto msg = "42[\"control\"," + msgJson.dump() + "]";
 
-                    //this_thread::sleep_for(chrono::milliseconds(1000));
+                    //this_thread::sleep_for(chrono::milliseconds(10000));
                     ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
-
                 }
             }
             else {
