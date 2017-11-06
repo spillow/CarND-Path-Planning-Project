@@ -166,9 +166,12 @@ vector<double> getXY(
 }
 
 const double TIME_STEP = 0.02; // 20 ms
+// Keep a prediction buffer out of 50 points (at 20 ms between, this is 1 s)
 const double BUFFER_SIZE = 50;
+// Speed limit is 50 mph, leave a little breathing room
 const double TOP_VEL = 49.5; // mph
 
+// Contains information for our vehicle
 class Ego
 {
 public:
@@ -192,6 +195,8 @@ public:
     }
 };
 
+// Keeps track of the each vehicle's informatin
+// gathered from sensor fusion.
 class Vehicle
 {
 public:
@@ -208,6 +213,9 @@ public:
         return sqrt(vx*vx + vy*vy);
     }
 
+    // predict the future s-coordinate of the vehicle
+    // at some time t in the future under the assumption
+    // that it moves with constant velocity.
     double _s(double t = 0.0) const
     {
         return s + speed() * t;
@@ -229,6 +237,14 @@ public:
     }
 };
 
+// General behavior:
+// KEEP_LANE - accelerate in the current lane until
+// speed limit is reached or another car is in front.
+// Then transition to PREPARE_CHANGE_LANE.
+// PREPARE_CHANGE_LANE - examine open lanes and keep
+// distance from car in front until an opening appears.
+// CHANGE_LANE - execute the action of changing to the
+// given lane.  Then go back to KEEP_LANE.
 enum BehaviorState
 {
     KEEP_LANE,
@@ -258,6 +274,8 @@ public:
     }
 };
 
+// A convenient container to pass around the current state
+// of the world to different functions.
 class Context
 {
 public:
@@ -304,6 +322,8 @@ Context getContext(const SensorData &Data, const StateInfo &Info)
     return{ Info, Data };
 }
 
+// Return true if 'lane' would be suitable for change.  'block_vehicles' returns
+// the collection of vehicles that are currently preventing lane change.
 bool open_lane(const Context &Ctx, unsigned lane, vector<Vehicle> &block_vehicles)
 {
     auto &Vehicles = Ctx.Data.vehicles;
@@ -318,21 +338,29 @@ bool open_lane(const Context &Ctx, unsigned lane, vector<Vehicle> &block_vehicle
 
         double dist_diff = abs(Ctx.Info.end_path_s - V._s(t));
 
+        // If it's just too close, wait for space to open up.
         if (dist_diff < 7.0)
         {
             block_vehicles.push_back(V);
             ret = false;
         }
 
+        // If we have plenty of space go for it.
+        // TODO: Is this still safe for very different
+        // speeds between us and an upcoming car?
         if (dist_diff < 30.0)
         {
             if (V._s(t) > Ctx.Info.end_path_s)
             {
+                // If the car in front of us is going
+                // far than us then it seems safe.
                 if (V.speed() > Ctx.Data.ego.ref_vel)
                     continue;
             }
             else
             {
+                // Merge if we're moving faster than
+                // the car behind us in the target lane.
                 if (Ctx.Data.ego.ref_vel > V.speed())
                     continue;
             }
@@ -344,6 +372,9 @@ bool open_lane(const Context &Ctx, unsigned lane, vector<Vehicle> &block_vehicle
     return ret;
 }
 
+// Take the simple strategy of looking for vehicles
+// 30 m. ahead of us.  We should consider changing
+// lanes if we get within that distance.
 bool look_for_lane_change(const Context &Ctx)
 {
     auto &Vehicles = Ctx.Data.vehicles;
@@ -367,6 +398,7 @@ bool look_for_lane_change(const Context &Ctx)
     return false;
 }
 
+// Within the range of [s_begin, s_end] in 'lane', return all of the vehicles in that space.
 std::vector<Vehicle> cars_ahead(const Context &Ctx, double s_begin, double s_end, unsigned lane)
 {
     auto &Vehicles = Ctx.Data.vehicles;
@@ -389,22 +421,26 @@ std::vector<Vehicle> cars_ahead(const Context &Ctx, double s_begin, double s_end
     return in_range;
 }
 
+// Strategy for determining which lane to choose to merge if there is an opening(s).
 bool check_lane_opening(const Context &Ctx, unsigned &lane, vector<Vehicle> &blocking_vehicles)
 {
     bool ret = false;
 
     if (lane == 0)
     {
+        // left lane, all we can do is merge to the middle
         if (ret = open_lane(Ctx, 1, blocking_vehicles))
             lane = 1;
     }
     else if (lane == 1)
     {
+        // In the middle lane, we have option of left or right.
         bool left = open_lane(Ctx, 0, blocking_vehicles);
         bool right = open_lane(Ctx, 2, blocking_vehicles);
 
         ret = left || right;
 
+        // Both open, make a good choice
         if (left && right)
         {
             // pick the one with less traffic ahead
@@ -428,6 +464,7 @@ bool check_lane_opening(const Context &Ctx, unsigned &lane, vector<Vehicle> &blo
     }
     else if (lane == 2)
     {
+        // right lane, move to middle
         if (ret = open_lane(Ctx, 1, blocking_vehicles))
             lane = 1;
     }
@@ -439,6 +476,7 @@ bool check_lane_opening(const Context &Ctx, unsigned &lane, vector<Vehicle> &blo
     return ret;
 }
 
+// Get the closest vehicle in the given lane
 const Vehicle *get_vehicle_in_front(const Context &Ctx, unsigned lane, double &dist_s)
 {
     auto &Vehicles = Ctx.Data.vehicles;
@@ -469,6 +507,8 @@ const Vehicle *get_vehicle_in_front(const Context &Ctx, unsigned lane, double &d
     return Closest;
 }
 
+// Main trajectory generation.  Given 'lane' and some velocity 'ref_vel', Generate a smooth
+// trajectory to follow (i.e., low acceleration and jerk).
 void fill_straight_path(
     const Context &Ctx, double ref_vel, unsigned lane, vector<double> &new_x, vector<double> &new_y)
 {
@@ -493,15 +533,12 @@ void fill_straight_path(
 
     double car_pred_s = (prev_size > 0) ? end_path_s : car_s;
 
-    /*
-    std::vector<double> ree = getXY(car_s, Ego.d);
-
-    std::cout << "actual (x,y) = " << "(" << car_x << "," << car_y << "), from (s,d) = "
-        << "(" << ree[0] << "," << ree[1] << ")" << std::endl;
-
-    std::cout << "car_d = " << Ego.d << std::endl;
-    */
-
+    // Previous attempts used the last two prev points.  It was discovered
+    // that, at low speeds, the car would not track the lanes well.
+    // This may be because the the previous points are so close together
+    // that it does not allow the spline to provide a smooth path
+    // or perhaps the yaw has too much error.  Moving the prev points
+    // further apart fixes this.
     if (prev_size < 10)
     {
         double prev_car_x = car_x - cos(car_yaw);
@@ -521,6 +558,8 @@ void fill_straight_path(
         double ref_x_prev = previous_path_x[prev_size - 10];
         double ref_y_prev = previous_path_y[prev_size - 10];
 
+        // Connect the previous path ending to the future points
+        // to provide a smooth transition.
         ref_yaw = atan2(ref_y - ref_y_prev, ref_x - ref_x_prev);
 
         ptsx.push_back(ref_x_prev);
@@ -530,6 +569,7 @@ void fill_straight_path(
         ptsy.push_back(ref_y);
     }
 
+    // Pick points far enough out.
     std::vector<double> next_wp0 = getXY(car_pred_s + 30, (2 + 4 * lane));
     std::vector<double> next_wp1 = getXY(car_pred_s + 60, (2 + 4 * lane));
     std::vector<double> next_wp2 = getXY(car_pred_s + 90, (2 + 4 * lane));
@@ -542,6 +582,11 @@ void fill_straight_path(
     ptsy.push_back(next_wp1[1]);
     ptsy.push_back(next_wp2[1]);
 
+    // We want to fit a spline to these points.  Here we translate and
+    // rotate the points to the car's reference frame.
+    // 1. The spline library requires x_i < x_i+1
+    // 2. The y = f(x) generated would not be a function for
+    //    more vertical paths.  Rotation fixes this.
     for (int i = 0; i < ptsx.size(); i++)
     {
         // shift reference angle
@@ -556,6 +601,8 @@ void fill_straight_path(
 
     s.set_points(ptsx, ptsy);
 
+
+    // Get a rough estimate how far apart we should sample points on the curve.
     double target_x = 30.0;
     double target_y = s(target_x);
     double target_dist = sqrt(target_x*target_x + target_y*target_y);
@@ -575,6 +622,8 @@ void fill_straight_path(
         double x_ref = x_point;
         double y_ref = y_point;
 
+
+        // re-rotate + translate to the global frame.
         x_point = x_ref * cos(ref_yaw) - y_ref * sin(ref_yaw);
         y_point = x_ref * sin(ref_yaw) + y_ref * cos(ref_yaw);
 
@@ -708,12 +757,14 @@ int main() {
                             State = PREPARE_CHANGE_LANE;
                             ref_vel -= 0.224;
                         }
+                        // Favor staying in the middle lane to increase options
                         else if ((lane == 0 || lane == 2) && check_lane_opening(Ctx, lane, blocking_vehicles))
                         {
                             State = CHANGE_LANE;
                         }
                         else
                         {
+                            // Otherwise juse keep accelerating if we can
                             if (ref_vel < TOP_VEL)
                                 ref_vel += 0.224;
                         }
@@ -738,6 +789,9 @@ int main() {
 
                             if (InFront)
                             {
+                                // Strike a balance in controlling velocity behind vehicle by slowing
+                                // down to potentially provide space to change while keeping fairly
+                                // close to the front car.
                                 if (dist < 10.0)
                                     ref_vel -= 0.15;
                                 else if (ref_vel > InFront->speed() && dist < 20.0)
@@ -755,6 +809,9 @@ int main() {
                     }
                     case CHANGE_LANE:
                     {
+                        // TODO: Could avoid some occasionl accidents by continually
+                        // evaluating whether a lane change is safe during the change
+                        // rather than just going for it.
                         std::cout << "State = CHANGE_LANE, lane = " << lane << std::endl;
                         double curr_d = Ctx.Data.ego.d;
                         double mid_lane_d = 2 + 4 * lane;
@@ -770,6 +827,8 @@ int main() {
                         {
                             if (dist < 20.0)
                             {
+                                // Watch out for merging behind a vehicle that
+                                // is going slower than us
                                 if (ref_vel > InFront->speed())
                                 {
                                     ref_vel -= 0.15;
