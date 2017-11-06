@@ -330,6 +330,7 @@ bool open_lane(const Context &Ctx, unsigned lane, vector<Vehicle> &block_vehicle
     double t = Ctx.end_path_time();
 
     bool ret = true;
+    double ref_vel = Ctx.Data.ego.ref_vel / 2.24; // m/s
 
     for (auto &V : Vehicles)
     {
@@ -337,6 +338,7 @@ bool open_lane(const Context &Ctx, unsigned lane, vector<Vehicle> &block_vehicle
             continue;
 
         double dist_diff = abs(Ctx.Info.end_path_s - V._s(t));
+        double speed_diff = abs(V.speed() - ref_vel);
 
         // If it's just too close, wait for space to open up.
         if (dist_diff < 10.0)
@@ -348,20 +350,20 @@ bool open_lane(const Context &Ctx, unsigned lane, vector<Vehicle> &block_vehicle
         // If we have plenty of space go for it.
         // TODO: Is this still safe for very different
         // speeds between us and an upcoming car?
-        if (dist_diff < 30.0)
+        if (dist_diff < 60.0)
         {
             if (V._s(t) > Ctx.Info.end_path_s)
             {
                 // If the car in front of us is going
                 // faster than us then it seems safe.
-                if (V.speed() > Ctx.Data.ego.ref_vel)
+                if ((V.speed() > ref_vel) || (dist_diff > 30 && speed_diff < 4))
                     continue;
             }
             else
             {
                 // Merge if we're moving faster than
                 // the car behind us in the target lane.
-                if (Ctx.Data.ego.ref_vel > V.speed())
+                if ((ref_vel > V.speed()) || (dist_diff > 30 && speed_diff < 4))
                     continue;
             }
             block_vehicles.push_back(V);
