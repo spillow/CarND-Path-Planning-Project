@@ -1,3 +1,54 @@
+[image1]: ./front.png "result_image"
+
+# Path Generation
+---------------------
+
+## Trajectory
+
+After experimentation with JMT, I determined that a simple velocity based trajectory generation similar to the Q+A
+worked well.  The core path generation is implemented in the function fill_straight_path() defined on line 512.  Given a lane
+and velocity:
+
+* Pick two previous points from the previous points buffer.  They need to be spread out enough to work correctly at low car speeds.
+   Q+A picked the last two but empirically it was determined that two points nine steps apart worked well.
+* Select a few points a distance out down the road.  Points too close may incur too much error in going from frenet coordinates
+  to cartesian due to the linear interpolation between waypoints.
+* Convert points to the car's reference frame.
+* Fit a spline.
+* Sample points from spline curve based on velocity.
+* Convert back to global frame.
+
+With this as a primitive, we now need to determine how fast to move and when to change lanes.
+
+## High Level Planning
+
+A simple state machine is used to determine what actions should be taken at any time.  Each state has its own way of
+maintaining the velocity of the vehicle for positioning and avoiding rear ending other vehicles.
+
+* KEEP_LANE : accelerate in the current lane until speed limit is reached or another car is in front.
+  Then transition to PREPARE_CHANGE_LANE.
+* PREPARE_CHANGE_LANE - examine open lanes and keep distance from car in front until an opening appears.
+  * See the comments from check_lane_opening() and open_lane() for exact strategy.
+* CHANGE_LANE - execute the action of changing to the given lane.  Then go back to KEEP_LANE.
+  * the spline will naturally select a reasonable trajectory with minimal acceleration and jerk.
+
+----------------------
+
+## Results
+
+In some simple test runs I've achieved a max distance of ~ 38 mi. without incident from which this was taken:
+
+![alt text][image1]
+
+This failed when Ego cut off a car speeding up behind it during a change.  A cost function that would simulate the
+paths of the two vehicles would probably avoid this.
+
+For further development, it would be interesting to see a simulator extension that could capture the time around an
+accident as a replay that could be used to build up a regression suite for testing more difficult cases as it becomes
+harder and harder to find issues just by running it.
+
+----------------------
+
 # CarND-Path-Planning-Project
 Self-Driving Car Engineer Nanodegree Program
    
