@@ -166,8 +166,8 @@ vector<double> getXY(
 }
 
 const double TIME_STEP = 0.02; // 20 ms
-// Keep a prediction buffer out of 50 points (at 20 ms between, this is 1 s)
-const double BUFFER_SIZE = 50;
+// Keep a prediction buffer out of 30 points (at 20 ms between, this is 600 ms)
+const double BUFFER_SIZE = 30;
 // Speed limit is 50 mph, leave a little breathing room
 const double TOP_VEL = 49.5; // mph
 
@@ -339,7 +339,7 @@ bool open_lane(const Context &Ctx, unsigned lane, vector<Vehicle> &block_vehicle
         double dist_diff = abs(Ctx.Info.end_path_s - V._s(t));
 
         // If it's just too close, wait for space to open up.
-        if (dist_diff < 7.0)
+        if (dist_diff < 10.0)
         {
             block_vehicles.push_back(V);
             ret = false;
@@ -353,7 +353,7 @@ bool open_lane(const Context &Ctx, unsigned lane, vector<Vehicle> &block_vehicle
             if (V._s(t) > Ctx.Info.end_path_s)
             {
                 // If the car in front of us is going
-                // far than us then it seems safe.
+                // faster than us then it seems safe.
                 if (V.speed() > Ctx.Data.ego.ref_vel)
                     continue;
             }
@@ -749,7 +749,6 @@ int main() {
                     {
                     case KEEP_LANE:
                     {
-                        std::cout << "State = KEEP_LANE, lane = " << lane << std::endl;
                         bool ShouldChange = look_for_lane_change(Ctx);
                         vector<Vehicle> blocking_vehicles;
                         if (ShouldChange)
@@ -774,7 +773,6 @@ int main() {
                     }
                     case PREPARE_CHANGE_LANE:
                     {
-                        std::cout << "State = PREPARE_CHANGE_LANE, lane = " << lane << std::endl;
                         vector<Vehicle> blocking_vehicles;
                         bool LaneOpening = check_lane_opening(Ctx, lane, blocking_vehicles);
                         if (LaneOpening)
@@ -812,7 +810,6 @@ int main() {
                         // TODO: Could avoid some occasionl accidents by continually
                         // evaluating whether a lane change is safe during the change
                         // rather than just going for it.
-                        std::cout << "State = CHANGE_LANE, lane = " << lane << std::endl;
                         double curr_d = Ctx.Data.ego.d;
                         double mid_lane_d = 2 + 4 * lane;
                         double left = mid_lane_d - 0.5;
@@ -832,7 +829,6 @@ int main() {
                                 if (ref_vel > InFront->speed())
                                 {
                                     ref_vel -= 0.15;
-                                    std::cout << "slowing..." << std::endl;
                                 }
                             }
                             else if (ref_vel < TOP_VEL)
