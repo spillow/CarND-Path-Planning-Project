@@ -429,7 +429,7 @@ bool check_lane_opening(const Context &Ctx, unsigned &lane, vector<Vehicle> &blo
     if (lane == 0)
     {
         // left lane, all we can do is merge to the middle
-        if (ret = open_lane(Ctx, 1, blocking_vehicles))
+        if ((ret = open_lane(Ctx, 1, blocking_vehicles)))
             lane = 1;
     }
     else if (lane == 1)
@@ -465,7 +465,7 @@ bool check_lane_opening(const Context &Ctx, unsigned &lane, vector<Vehicle> &blo
     else if (lane == 2)
     {
         // right lane, move to middle
-        if (ret = open_lane(Ctx, 1, blocking_vehicles))
+        if ((ret = open_lane(Ctx, 1, blocking_vehicles)))
             lane = 1;
     }
     else
