@@ -332,6 +332,10 @@ bool open_lane(const Context &Ctx, unsigned lane, vector<Vehicle> &block_vehicle
     bool ret = true;
     double ref_vel = Ctx.Data.ego.ref_vel / 2.24; // m/s
 
+    //  If we're going too slowly don't try to merge
+    if (ref_vel < 13.4) // ~ 30 mph
+      return false;
+
     for (auto &V : Vehicles)
     {
         if (V.get_lane() != lane)
@@ -723,11 +727,14 @@ int main() {
                     // Sensor Fusion Data, a list of all other cars on the same side of the road.
                     const std::vector<std::vector<double>> sensor_fusion = j[1]["sensor_fusion"];
 
-                    const Context Ctx =
-                        getContext(
-                            getSensorData(sensor_fusion, car_x, car_y, car_s,
-                                car_d, car_yaw, car_speed, ref_vel),
-                            getStateInfo(previous_path_x, previous_path_y, end_path_s, end_path_d, getXY));
+                    const SensorData Data =
+                      getSensorData(sensor_fusion, car_x, car_y, car_s,
+                          car_d, car_yaw, car_speed, ref_vel);
+
+                    const StateInfo Info =
+                      getStateInfo(previous_path_x, previous_path_y, end_path_s, end_path_d, getXY);
+
+                    const Context Ctx = getContext(Data, Info);
 
                     const unsigned prev_size = previous_path_x.size();
 
